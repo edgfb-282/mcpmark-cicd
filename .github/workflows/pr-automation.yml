@@ -1,0 +1,187 @@
+name: PR Automation Workflow
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    name: code-quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint
+        run: npm run lint 2>&1 | tee eslint-results.txt
+      - name: Run Prettier
+        run: npx prettier --check . 2>&1 | tee prettier-results.txt
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const eslintResults = fs.readFileSync('eslint-results.txt', 'utf8');
+            const prettierResults = fs.readFileSync('prettier-results.txt', 'utf8');
+            const commentBody = `
+            ## Code Quality Report
+            ### ESLint Checks
+            \`\`\`
+            ${eslintResults}
+            \`\`\`
+            ### Prettier Formatting Checks
+            \`\`\`
+            ${prettierResults}
+            \`\`\`
+            `;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  testing-suite:
+    name: testing-suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests with coverage
+        run: npm test -- --coverage 2>&1 | tee test-coverage-results.txt
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const coverageResults = fs.readFileSync('test-coverage-results.txt', 'utf8');
+            const commentBody = `
+            ## Test Coverage Report
+            \`\`\`
+            ${coverageResults}
+            \`\`\`
+            `;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  security-scan:
+    name: security-scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run dependency vulnerability check (npm audit)
+        run: npm audit 2>&1 | tee vulnerability-results.txt
+      - name: Run secret scan (gitleaks)
+        run: npx gitleaks detect --source . --report-path secret-scan-results.txt 2>&1 | tee secret-scan-results.txt
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const vulnerabilityResults = fs.readFileSync('vulnerability-results.txt', 'utf8');
+            const secretResults = fs.readFileSync('secret-scan-results.txt', 'utf8');
+            const commentBody = `
+            ## Security Scan Report
+            ### Dependencies Vulnerabilities
+            \`\`\`
+            ${vulnerabilityResults}
+            \`\`\`
+            ### Secrets Scan
+            \`\`\`
+            ${secretResults}
+            \`\`\`
+            `;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
+
+  build-validation:
+    name: build-validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build application
+        run: npm run build 2>&1 | tee build-results.txt
+      - name: Validate endpoints
+        run: |
+          # Check if build directory exists (adjust path as needed for the project)
+          BUILD_DIR="dist"
+          if [ -d "$BUILD_DIR" ]; then
+            echo "✅ Build successful: $BUILD_DIR directory exists" >> build-results.txt
+            # Example: Start application and validate health endpoint
+            npm start &
+            APP_PID=$!
+            sleep 10 # Wait for app to start
+            # Check health endpoint (adjust URL as needed)
+            if curl -s -f http://localhost:3000/health > /dev/null; then
+              echo "✅ Health endpoint accessible at http://localhost:3000/health" >> build-results.txt
+            else
+              echo "❌ Health endpoint not accessible" >> build-results.txt
+            fi
+            # Stop the application
+            kill $APP_PID
+          else
+            echo "❌ Build failed: $BUILD_DIR directory missing" >> build-results.txt
+            exit 1
+          fi
+      - name: Upload deployment preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-preview
+          path: dist/
+      - name: Post Build Validation Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const buildResults = fs.readFileSync('build-results.txt', 'utf8');
+            const commentBody = `
+            ## Build Validation
+            \`\`\`
+            ${buildResults}
+            \`\`\`
+            `;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: commentBody
+            });
